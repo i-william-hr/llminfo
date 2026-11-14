@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llminfo — OpenRouter price board</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>llminfo</h1>
+    <p class="sub">OpenRouter pricing &amp; features, grouped &amp; compared</p>
+  </div>
+  <div class="status">
+    {% if last_refresh %}
+      <span>prices updated {{ fmt_ts(last_refresh) }}</span>
+    {% else %}
+      <span>prices not fetched yet</span>
+    {% endif %}
+    {% if refreshing %}<span class="pill sync">refreshing…</span>{% endif %}
+    <form method="post" action="{{ url_for('admin_refresh') }}" class="inline">
+      <button type="submit" title="Re-fetch all pricing from OpenRouter now">refresh now</button>
+    </form>
+  </div>
+</header>
+
+<main>
+<nav class="tabs" aria-label="views">
+  <a href="{{ url_for('index', tab='board') }}"
+     class="{% if tab != 'eu' %}active{% endif %}">my board</a>
+  <a href="{{ url_for('index', tab='eu') }}"
+     class="{% if tab == 'eu' %}active{% endif %}">EU in-region{% if eu_count %} ({{ eu_count }}){% endif %}</a>
+</nav>
+
+{% if tab == "eu" %}
+<section class="eu">
+  <p class="policy-note">
+    Models served through <strong>EU in-region routing</strong> (OpenRouter Business):
+    requests to <code>{{ eu_base_url }}</code> stay on provider endpoints in
+    Europe (EU/EEA, UK, Switzerland) — prompts and completions are processed
+    there. Prices below are the EU-route top prices; the Δ column compares the
+    blended $/1M against the same model on the global route.
+    {% if eu_updated %}
+      <span class="muted">List updated {{ fmt_ts(eu_updated) }}.</span>
+    {% endif %}
+    {% if eu_stale %}<span class="pill sync">stale — refreshing…</span>{% endif %}
+  </p>
+  <div class="eu-bar">
+    <form method="post" action="{{ url_for('admin_eu_refresh') }}" class="inline">
+      <button type="submit" title="Re-fetch the EU model list from eu.openrouter.ai">refresh EU list</button>
+    </form>
+    <span class="sort">
+      sort:
+      <a href="{{ url_for('index', tab='eu', sort='price') }}"
+         class="{% if eu_sort == 'price' %}on{% endif %}">price</a> ·
+      <a href="{{ url_for('index', tab='eu', sort='name') }}"
+         class="{% if eu_sort == 'name' %}on{% endif %}">name</a> ·
+      <a href="{{ url_for('index', tab='eu', sort='ctx') }}"
+         class="{% if eu_sort == 'ctx' %}on{% endif %}">context</a>
+    </span>
+    <input id="eu-filter" type="search" placeholder="filter models…" aria-label="Filter EU models">
+  </div>
+
+  <div class="cards" id="eu-cards">
+  {% for m in eu_models %}
+    <article class="card eu-card" data-search="{{ (m.row['name'] ~ ' ' ~ m.row['openrouter_id']) | lower }}">
+      <div class="card-top">
+        <h3>{{ m.row["name"] }}</h3>
+        <code class="orid">{{ m.row["openrouter_id"] }}</code>
+      </div>
+      <div class="price">
+        <div class="pcol">
+          <span class="plabel">in / 1M</span>
+          <span class="pval">{{ fmt_money(per_m(m.pricing.get("prompt"))) }}</span>
+        </div>
+        <div class="pcol">
+          <span class="plabel">out / 1M</span>
+          <span class="pval">{{ fmt_money(per_m(m.pricing.get("completion"))) }}</span>
+        </div>
+        <div class="pcol">
+          <span class="plabel">blended / 1M</span>
+          <span class="pval big">{{ fmt_money(m.blend) }}</span>
+        </div>
+        <div class="pcol">
+          <span class="plabel">vs global</span>
+          {% if m.delta is none %}
+            <span class="pval small muted">n/a</span>
+          {% elif m.delta|abs < 0.5 %}
+            <span class="pill notrain">same</span>
+          {% elif m.delta > 0 %}
+            <span class="pill maytrain">+{{ "%.1f"|format(m.delta) }}%</span>
+          {% else %}
+            <span class="pill notrain">{{ "%.1f"|format(m.delta) }}%</span>
+          {% endif %}
+        </div>
+      </div>
+      <p class="eu-meta muted">context {{ m.row["context_length"] or "—" }}
+        {% if m.tracked %}· <span class="pill notrain">on my board</span>{% endif %}
+      </p>
+      {% if m.row["description"] %}
+      <details class="desc">
+        <summary>description</summary>
+        <p class="mdesc">{{ m.row["description"] }}</p>
+      </details>
+      {% endif %}
+      {% if not m.tracked %}
+      <form method="post" action="{{ url_for('admin_model_add') }}" class="eu-track">
+        <input type="hidden" name="openrouter_id" value="{{ m.row['openrouter_id'] }}">
+        <input type="hidden" name="label" value="{{ m.row['name'] }}">
+        <label>track in
+          <select name="group_id">
+            {% for grp in groups %}<option value="{{ grp.group['id'] }}">{{ grp.group['name'] }}</option>{% endfor %}
+          </select>
+        </label>
+        <button type="submit">track</button>
+      </form>
+      {% endif %}
+    </article>
+  {% endfor %}
+  </div>
+  {% if not eu_models %}
+  <p class="empty">No EU snapshot yet — hit “refresh EU list”.</p>
+  {% endif %}
+</section>
+<script>
+(function () {
+  var box = document.getElementById('eu-filter');
+  var cards = document.querySelectorAll('#eu-cards .eu-card');
+  if (!box) return;
+  box.addEventListener('input', function () {
+    var q = box.value.toLowerCase();
+    cards.forEach(function (c) {
+      c.style.display = c.getAttribute('data-search').indexOf(q) === -1 ? 'none' : '';
+    });
+  });
+})();
+</script>
+{% else %}
+<p class="policy-note">
+  Displayed price = <strong>cheapest endpoint</strong> across all vendors.
+  Each price carries its vendor's training status as a badge
+  (<strong class="notrain">no-train</strong>,
+  <strong class="maytrain">may-train</strong>,
+  <span class="pill unknown">unknown</span>) — informational only, it does not
+  affect which price is picked.
+  Descriptions & features are mirrored once when a model is added, pricing re-checks
+  every few hours and on visit when stale. Blended $/1M = 75% input + 25% output.
+</p>
+
+{% for grp in groups %}
+<section class="group">
+  <div class="group-head">
+    <h2>{{ grp.group["name"] }}</h2>
+    <form method="post" action="{{ url_for('admin_group_rename', gid=grp.group['id']) }}" class="inline">
+      <input name="name" value="{{ grp.group['name'] }}" size="22" aria-label="Rename group">
+      <button type="submit">rename</button>
+    </form>
+    <form method="post" action="{{ url_for('admin_group_delete', gid=grp.group['id']) }}"
+          class="inline js-confirm" data-confirm="Delete this group and ALL its models?">
+      <button type="submit" class="danger">delete group</button>
+    </form>
+  </div>
+
+  {% if grp.ranked %}
+  <div class="compare">
+    <h3>compare — blended $/1M tokens (75/25)</h3>
+    {% for m in grp.ranked %}
+      {% set b = blended(m.chosen.pricing.prompt, m.chosen.pricing.completion) * 1000000 %}
+      <div class="crow">
+        <span class="cname">{{ m.row["label"] }}</span>
+        <span class="cbar"><span style="width:{{ (100 * b / max_blend) if max_blend else 0 }}%"></span></span>
+        <span class="cval">{{ fmt_money(b) }}</span>
+        <span class="cprov">{{ m.chosen.provider_name }}</span>
+        {% if m.trains == "no" %}<span class="pill notrain">no-train</span>
+        {% elif m.trains == "yes" %}<span class="pill maytrain">trains</span>
+        {% else %}<span class="pill unknown">unknown</span>{% endif %}
+      </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="cards">
+  {% for m in grp.models %}
+    <article class="card">
+      <div class="card-top">
+        <h3>{{ m.row["label"] }}</h3>
+        <code class="orid">{{ m.row["openrouter_id"] }}</code>
+        {% if m.row["note"] %}<p class="note">{{ m.row["note"] }}</p>{% endif %}
+      </div>
+
+      {% if m.chosen %}
+      <div class="price">
+        <div class="pcol">
+          <span class="plabel">in / 1M</span>
+          <span class="pval">{{ fmt_money(per_m(m.chosen.pricing.prompt)) }}</span>
+        </div>
+        <div class="pcol">
+          <span class="plabel">out / 1M</span>
+          <span class="pval">{{ fmt_money(per_m(m.chosen.pricing.completion)) }}</span>
+        </div>
+        <div class="pcol">
+          <span class="plabel">blended / 1M</span>
+          <span class="pval big">{{ fmt_money(blended(m.chosen.pricing.prompt, m.chosen.pricing.completion) * 1000000) }}</span>
+        </div>
+        <div class="pcol">
+          <span class="plabel">via</span>
+          <span class="pval small">{{ m.chosen.provider_name }}</span>
+          {% if m.trains == "no" %}<span class="pill notrain">no-train</span>
+          {% elif m.trains == "yes" %}<span class="pill maytrain">trains</span>
+          {% else %}<span class="pill unknown">unknown</span>{% endif %}
+        </div>
+        {% if m.history %}<div class="pcol hist">{{ spark(m.history) }}</div>{% endif %}
+      </div>
+      {% else %}
+      <p class="empty">no endpoint pricing yet — refresh to fetch.</p>
+      {% endif %}
+
+      <details class="desc">
+        <summary>description &amp; features <span class="muted">(mirrored {{ fmt_ts(m.row["mirrored_at"]) }})</span></summary>
+        {% if m.row["description"] %}
+          <p class="mdesc">{{ m.row["description"] }}</p>
+        {% else %}
+          <p class="muted">no description mirrored yet.</p>
+        {% endif %}
+        <dl class="feats">
+          <div><dt>context</dt><dd>{{ m.features.context_length or "—" }}</dd></div>
+          <div><dt>modality</dt><dd>{{ m.features.modality or "—" }}</dd></div>
+          <div><dt>inputs</dt><dd>{{ (m.features.input_modalities or []) | join(", ") or "—" }}</dd></div>
+          <div><dt>outputs</dt><dd>{{ (m.features.output_modalities or []) | join(", ") or "—" }}</dd></div>
+          <div><dt>tokenizer</dt><dd>{{ m.features.tokenizer or "—" }}</dd></div>
+          <div><dt>reasoning</dt><dd>{{ (m.features.reasoning or {}).keys() | list | join(", ") or "—" }}</dd></div>
+          <div><dt>supports</dt><dd>{{ (m.features.supported_parameters or []) | join(", ") or "—" }}</dd></div>
+        </dl>
+      </details>
+
+      <details class="eps">
+        <summary>endpoints ({{ m.endpoints | length }}) — all vendors &amp; prices</summary>
+        <table>
+          <thead><tr><th>vendor</th><th>route / tag</th><th>in&nbsp;/1M</th><th>out&nbsp;/1M</th><th>training</th></tr></thead>
+          <tbody>
+          {% for e in m.endpoints %}
+            <tr class="{% if m.chosen and e.provider_name == m.chosen.provider_name and e.pricing == m.chosen.pricing %}picked{% endif %}">
+              <td>{{ e.provider_name or "—" }}</td>
+              <td class="muted">{{ e.tag or "—" }}{% if e.quantization and e.quantization != "unknown" %} · {{ e.quantization }}{% endif %}</td>
+              <td>{{ fmt_money(per_m(e.pricing.prompt)) }}</td>
+              <td>{{ fmt_money(per_m(e.pricing.completion)) }}</td>
+              <td>{% if e.trains == "no" %}<span class="pill notrain">no-train</span>
+                  {% elif e.trains == "yes" %}<span class="pill maytrain">trains</span>
+                  {% else %}<span class="pill unknown">unknown</span>{% endif %}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </details>
+
+      <div class="card-admin">
+        <form method="post" action="{{ url_for('admin_model_refresh', mid=m.row['id']) }}" class="inline">
+          <button type="submit" title="Re-fetch endpoints + pricing for this model">refresh</button>
+        </form>
+        <form method="post" action="{{ url_for('admin_model_remirror', mid=m.row['id']) }}" class="inline">
+          <button type="submit" title="Re-mirror description + features from OpenRouter">re-mirror</button>
+        </form>
+        <form method="post" action="{{ url_for('admin_model_move', mid=m.row['id']) }}" class="inline">
+          <input type="hidden" name="direction" value="up"><button type="submit" title="Move up">↑</button>
+        </form>
+        <form method="post" action="{{ url_for('admin_model_move', mid=m.row['id']) }}" class="inline">
+          <input type="hidden" name="direction" value="down"><button type="submit" title="Move down">↓</button>
+        </form>
+        <details class="edit">
+          <summary>edit</summary>
+          <form method="post" action="{{ url_for('admin_model_edit', mid=m.row['id']) }}">
+            <label>label <input name="label" value="{{ m.row['label'] }}" size="28"></label>
+            <label>note <input name="note" value="{{ m.row['note'] }}" size="28" placeholder="e.g. Mistral EU route"></label>
+            <button type="submit">save</button>
+          </form>
+          <form method="post" action="{{ url_for('admin_model_move', mid=m.row['id']) }}">
+            <label>move to
+              <select name="group_id">
+                {% for g2 in groups %}
+                <option value="{{ g2.group['id'] }}" {% if g2.group['id'] == m.row['group_id'] %}selected{% endif %}>{{ g2.group['name'] }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit">move</button>
+          </form>
+          <form method="post" action="{{ url_for('admin_model_delete', mid=m.row['id']) }}"
+                class="js-confirm" data-confirm="Remove this model from tracking?">
+            <button type="submit" class="danger">remove model</button>
+          </form>
+        </details>
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+</section>
+{% endfor %}
+
+<section class="admin">
+  <div class="abox">
+    <h3>track a new model</h3>
+    <form method="post" action="{{ url_for('admin_model_add') }}">
+      <label>OpenRouter id <input name="openrouter_id" size="34" placeholder="vendor/model-name" required></label>
+      <label>label <input name="label" size="24" placeholder="display name"></label>
+      <label>group
+        <select name="group_id">
+          {% for grp in groups %}<option value="{{ grp.group['id'] }}">{{ grp.group['name'] }}</option>{% endfor %}
+        </select>
+      </label>
+      <button type="submit">add + mirror + fetch pricing</button>
+    </form>
+    <p class="muted">Description &amp; features are mirrored once at add time; pricing then follows the normal refresh cycle.</p>
+  </div>
+  <div class="abox">
+    <h3>new group</h3>
+    <form method="post" action="{{ url_for('admin_group_add') }}">
+      <label>name <input name="name" size="28" required></label>
+      <button type="submit">create group</button>
+    </form>
+  </div>
+  <div class="abox wide">
+    <h3>vendor training policy</h3>
+    <p class="muted">Matched case-insensitively against endpoint vendor names.
+      Used only for the training badges on each price — it does not change which
+      price is shown (always the cheapest endpoint).</p>
+    <table>
+      <thead><tr><th>match</th><th>trains?</th><th>note</th><th></th></tr></thead>
+      <tbody>
+      {% for key, val in policy.items() %}
+        <tr>
+          <td><code>{{ key }}</code></td>
+          <td>{% if val[0] == "no" %}<span class="pill notrain">no</span>
+              {% elif val[0] == "yes" %}<span class="pill maytrain">yes</span>
+              {% else %}<span class="pill unknown">unknown</span>{% endif %}</td>
+          <td class="muted">{{ val[1] }}</td>
+          <td></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <form method="post" action="{{ url_for('admin_policy') }}" class="policyform">
+      <label>match <input name="provider_key" size="20" placeholder="vendor substring" required></label>
+      <label>trains?
+        <select name="trains">
+          <option value="no">no</option>
+          <option value="unknown" selected>unknown</option>
+          <option value="yes">yes</option>
+        </select>
+      </label>
+      <label>note <input name="note" size="40"></label>
+      <button type="submit">add / update</button>
+    </form>
+    {% if providers %}
+    <p class="muted">vendors seen on current endpoints:
+      {% for p in providers %}<code>{{ p }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+</main>
+
+<footer>
+  <span>llminfo · prices: OpenRouter public API · descriptions mirrored per model</span>
+</footer>
+<script>
+// Confirm dialogs read static data-confirm text only — never model or group
+// names. Interpolating DB-stored names into onsubmit JS strings was stored
+// XSS (Jinja escaping is decoded before JS runs), so the names stay in
+// textContent/attributes and out of script.
+document.querySelectorAll('form.js-confirm').forEach(function (f) {
+  f.addEventListener('submit', function (ev) {
+    if (!window.confirm(f.getAttribute('data-confirm') || 'Are you sure?')) {
+      ev.preventDefault();
+    }
+  });
+});
+</script>
+</body>
+</html>
